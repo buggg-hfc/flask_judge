@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>提交文件</title>
+    <style>
+        #drop_zone {
+            width: 300px;
+            height: 100px;
+            border: 2px dashed #ccc;
+            text-align: center;
+            line-height: 100px;
+            margin: 20px auto;
+        }
+        table {
+            width: 80%;
+            margin: 20px auto;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="text-align: center">提交你的CPP文件以测试样例</h1>
+    <div id="drop_zone">将文件拖拽到此处</div>
+    <form action="/upload" method="post" enctype="multipart/form-data" id="fileUploadForm" style="display: none;">
+        <input type="file" id="fileInput" name="file">
+    </form>
+
+    <!-- 表格展示评测记录 -->
+    <table>
+        <tr>
+            <th>评测时间</th>
+            <th>提交文件</th>
+            <th>评测结果</th>
+        </tr>
+        <!-- 后端通过模板变量submissions传递评测记录 -->
+        {% for submission in submissions %}
+        <tr style="background-color: {{ 'lightgreen' if '答案正确' in submission.result else 'lightcoral' }};">
+            <td>{{ submission.timestamp }}</td>
+            <td>{{ submission.filename }}</td>
+            <td>{{ submission.result }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+<script>
+    var dropZone = document.getElementById('drop_zone');
+    var fileInput = document.getElementById('fileInput');
+    var fileUploadForm = document.getElementById('fileUploadForm');
+
+    dropZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        dropZone.style.backgroundColor = '#f0f0f0';
+    });
+
+    dropZone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        dropZone.style.backgroundColor = '';
+    });
+
+    dropZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dropZone.style.backgroundColor = '';
+        var files = e.dataTransfer.files;
+        if (files.length > 0) {
+            fileInput.files = files;
+            fileUploadForm.submit();
+        }
+    });
+</script>
+</html>
