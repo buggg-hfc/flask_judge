@@ -5,6 +5,7 @@ import psutil
 import json
 from pathlib import Path
 import webbrowser
+import re
 
 MEMORY_LIMIT = 512  # 全局内存限制（单位：MB）
 TIME_LIMIT = 1  # 全局时间限制（单位：s）
@@ -42,9 +43,11 @@ def index():
                     'result': log_data['result']
                 })
         except json.JSONDecodeError:
-            print(f"Warning: Failed to parse {log_file} as JSON. Skipping this file.")
+            pass
+            # print(f"Warning: Failed to parse {log_file} as JSON. Skipping this file.")
         except KeyError:
-            print(f"Warning: {log_file} is missing required fields. Skipping this file.")
+            pass
+            # print(f"Warning: {log_file} is missing required fields. Skipping this file.")
 
     # 按时间排序，确保最新的记录在前
     submissions.sort(key=lambda x: x['timestamp'], reverse=True)
@@ -66,7 +69,7 @@ def upload_file():
         file_path = UPLOAD_FOLDER / filename
         file.save(file_path)
         # 编译cpp文件
-        result = compile_and_test_cpp(file_path)
+        result = compile_and_test_cpp(file_path, PROBLEMS_FOLDER, MEMORY_LIMIT, TIME_LIMIT)
 
         # 保存评测结果
         # 确保submission目录存在
@@ -96,71 +99,116 @@ def upload_file():
         return '文件错误：请检查你上传的文件是否为*.cpp文件。'
 
 
-def compile_and_test_cpp(filepath):
+def preprocess_and_check_code(filepath):
+    """
+    宏展开代码，并进行简单的安全检查。
+    """
+    # 使用 GCC 进行宏展开
+    preprocess_command = f".\\mingw64\\bin\\g++.exe -E {filepath}"
+    try:
+        preprocessed_code = subprocess.check_output(preprocess_command, shell=True).decode()
+        print('debug:', preprocessed_code)
+    except subprocess.CalledProcessError:
+        return False
+
+    # 检查宏展开后的代码中是否存在潜在的危险指令
+    dangerous_patterns = [
+        r'system\s*\(\"',
+        r'exec\s*\(\"'
+    ]
+    for pattern in dangerous_patterns:
+        if re.search(pattern, preprocessed_code):
+            return False  # 发现潜在危险指令
+
+    return True
+
+
+def compile_and_test_cpp(filepath, problems_folder=PROBLEMS_FOLDER, memory_limit_mb=512, time_limit_sec=1):
+    """
+    编译并测试 C++ 程序。
+
+    参数:
+    - filepath: 提交的 C++ 源代码文件的路径。
+    - problems_folder: 包含测试数据的目录路径。
+    - memory_limit_mb: 允许程序使用的最大内存（以 MB 为单位）。
+    - time_limit_sec: 允许程序运行的最大时间（以秒为单位）。
+
+    返回:
+    - 一个字符串，描述测试结果。
+    """
+
     # 1. 检查上传文件名是否正确
 
     # 确保数据目录存在
-    if not PROBLEMS_FOLDER.exists():
-        PROBLEMS_FOLDER.mkdir(parents=True)
+    problems_path = Path(problems_folder)
+    if not problems_path.exists():
+        return '内部错误：测试数据目录不存在。'
 
     # 获取提交的cpp文件名
     filename = filepath.name
     subfolder = filename.rsplit('.', 1)[0]
-
-    # 查找子文件夹
-    subfolder_path = PROBLEMS_FOLDER / subfolder
+    subfolder_path = problems_path / subfolder
 
     # 检查子文件夹是否存在
     if not subfolder_path.exists():
         return f'文件错误：题目“{subfolder}”不存在，请检查你的文件命名是否正确。'
+
+    # 预处理并检查代码
+    if not preprocess_and_check_code(filepath):
+        return '拒绝编译：检测到潜在的危险操作。'
 
     # 2. 检查编译是否正确
 
     # 编译cpp文件
     compiled_file = filepath.with_suffix('.exe')
     compile_command = f".\\mingw64\\bin\\g++.exe {filepath} -o {compiled_file} -Wall -std=c++11 -O2"
-    subprocess.run(compile_command, shell=True)
+    compile_result = subprocess.run(compile_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # 检查编译是否成功
-    if not compiled_file.exists():
+    if compile_result.returncode != 0:
         return '编译错误：你提交的代码编译失败，请在本地开发环境确认代码能否正确编译。'
 
     # 3. 运行代码
 
-    # 查找所有的输入文件
-    input_files = list(subfolder_path.glob('*.in'))
-
-    # 设置内存限制
-    memory_limit = MEMORY_LIMIT * 1024 * 1024  # 默认 512MB
-    process = psutil.Process()
-
     # 对每个输入文件进行测试
-    for input_file in input_files:
-        # 3.1 检查内存使用量
-        if process.memory_info().rss > memory_limit:
-            return '内存超限：你提交的代码由于超过运行内存限制导致运行失败，请检查你是否创建了过大的数组，或者动态分配了过多的内存空间。'
+    for input_file in subfolder_path.glob('*.in'):
+        output_file = input_file.with_suffix('.result')
 
-        # 构建输出文件的完整路径
-        output_file = input_file.with_suffix('.out')
+        with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
+            start_time = datetime.now()
+            proc = subprocess.Popen([compiled_file], stdin=infile, stdout=outfile)
 
-        # 3.2 检查运行时限
-        # 执行编译后的文件，将输入文件作为输入
-        try:
-            result = subprocess.run([compiled_file], stdin=open(input_file), stdout=subprocess.PIPE,
-                                    text=True, timeout=TIME_LIMIT, check=True)
-        except subprocess.TimeoutExpired:
-            return '运行超时：你提交的代码由于超过 CPU 运行时间限制导致运行失败，请检查你的算法的时间复杂度等是否正确。'
+            # 监控内存使用
+            peak_memory = 0
+            try:
+                while True:
+                    if proc.poll() is not None:  # 检查进程是否已结束
+                        break
+                    proc_memory = psutil.Process(proc.pid).memory_info().rss
+                    if proc_memory > peak_memory:
+                        peak_memory = proc_memory
+                    if peak_memory > memory_limit_mb * 1024 * 1024:
+                        proc.kill()
+                        return '内存超限：你提交的代码由于超过运行内存限制导致运行失败，请检查你是否创建了过大的数组，或者动态分配了过多的内存空间。'
 
-        # 读取预期输出文件内容
-        with open(output_file, 'r') as f:
-            expected_output_lines = f.readlines()
+                    # 检查是否超时
+                    if (datetime.now() - start_time).seconds > time_limit_sec:
+                        proc.kill()
+                        return '运行超时：你提交的代码由于超过 CPU 运行时间限制导致运行失败，请检查你的算法的时间复杂度等是否正确。'
+            except psutil.NoSuchProcess:
+                pass
+
+        expected_output_file = input_file.with_suffix('.out')
 
         # 3.3 检查答案正确性
-        actual_output_lines = result.stdout.splitlines()
-        if len(actual_output_lines) != len(expected_output_lines):
-            return '答案错误：你提交的代码没有正确通过样例或运行错误，请检查你的算法是否正确，是否忽略了某些边界情况等等。'
-        for actual_line, expected_line in zip(actual_output_lines, expected_output_lines):
-            if actual_line.rstrip() != expected_line.rstrip():
+        with open(output_file, 'r') as f_out, open(expected_output_file, 'r') as f_exp:
+            output_lines = f_out.read().rstrip().split('\n')
+            expected_lines = f_exp.read().rstrip().split('\n')
+
+            # 删除每行末尾的空格
+            output_lines = [line.rstrip() for line in output_lines]
+            expected_lines = [line.rstrip() for line in expected_lines]
+            if output_lines != expected_lines:
                 return '答案错误：你提交的代码没有正确通过样例或运行错误，请检查你的算法是否正确，是否忽略了某些边界情况等等。'
 
     return '答案正确：你提交的代码运行正常，正确通过了样例（但不代表你的代码能通过最终测试数据）。'
