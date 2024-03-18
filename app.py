@@ -105,7 +105,7 @@ def compile_and_test_cpp(filepath):
 
     # 获取提交的cpp文件名
     filename = filepath.name
-    subfolder = filename.split('.')[0]
+    subfolder = filename.rsplit('.', 1)[0]
 
     # 查找子文件夹
     subfolder_path = PROBLEMS_FOLDER / subfolder
