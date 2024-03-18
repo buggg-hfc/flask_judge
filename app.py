@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, redirect
-import os
+from pathlib import Path
 import subprocess
 from datetime import datetime
 import psutil
@@ -12,11 +12,11 @@ TIME_LIMIT = 1  # 全局时间限制（单位：s）
 app = Flask(__name__)
 
 # 设置上传文件保存的目录
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = Path('uploads')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # 设置测试数据保存的目录
-PROBLEMS_FOLDER = 'problems'
+PROBLEMS_FOLDER = Path('problems')
 app.config['PROBLEMS_FOLDER'] = PROBLEMS_FOLDER
 
 # 允许上传的文件类型
@@ -30,7 +30,8 @@ def allowed_file(filename):
 @app.route('/')
 def index():
     submissions = []
-    log_files = glob.glob('submission/*.log')
+    log_files = list(Path('submission').glob('*.log'))
+    # log_files = glob.glob('submission/*.log')
     for log_file in log_files:
         with open(log_file, 'r') as file:
             # 每个日志文件的第一行是评测时间，第二行是评测结果
@@ -55,25 +56,25 @@ def upload_file():
     if file and allowed_file(file.filename):
         filename = file.filename
         # 确保上传目录存在
-        if not os.path.exists(UPLOAD_FOLDER):
-            os.makedirs(UPLOAD_FOLDER)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if not UPLOAD_FOLDER.exists():
+            UPLOAD_FOLDER.mkdir(parents=True)
+        file_path = UPLOAD_FOLDER / filename
         file.save(file_path)
         # 编译cpp文件
         result = compile_and_test_cpp(file_path)
 
         # 保存评测结果
         # 确保submission目录存在
-        submission_folder = 'submission'
-        if not os.path.exists(submission_folder):
-            os.makedirs(submission_folder)
+        submission_folder = Path('submission')
+        if not submission_folder.exists():
+            submission_folder.mkdir(parents=True)
 
         # 生成日志文件名
         timestamp_for_filename = datetime.now().strftime('%Y%m%d-%H%M%S')  # 用于文件名的日期+时间
         timestamp_for_log = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # 用于日志内容的日期+时间
-        filename_without_ext = os.path.basename(file_path).split('.')[0]  # 去掉扩展名的提交的文件名
+        filename_without_ext = file_path.stem  # 去掉扩展名的提交的文件名
         log_filename = f"{timestamp_for_filename}-{filename_without_ext}.log"  # 组合成日志文件名
-        log_path = os.path.join(submission_folder, log_filename)  # 日志文件的完整路径
+        log_path = submission_folder / log_filename  # 日志文件的完整路径
 
         # 将评测时间和评测结果写入日志文件
         with open(log_path, 'w') as log_file:
@@ -88,39 +89,39 @@ def compile_and_test_cpp(filepath):
     # 1. 检查上传文件名是否正确
 
     # 确保数据目录存在
-    if not os.path.exists(PROBLEMS_FOLDER):
-        os.makedirs(PROBLEMS_FOLDER)
+    if not PROBLEMS_FOLDER.exists():
+        PROBLEMS_FOLDER.mkdir(parents=True)
 
     # 获取提交的cpp文件名
-    filename = os.path.basename(filepath)
+    filename = filepath.name
     subfolder = filename.split('.')[0]
 
     # 查找子文件夹
-    subfolder_path = os.path.join(app.config['PROBLEMS_FOLDER'], subfolder)
+    subfolder_path = PROBLEMS_FOLDER / subfolder
 
     # 检查子文件夹是否存在
-    if not os.path.exists(subfolder_path):
+    if not subfolder_path.exists():
         return f'文件错误：题目“{subfolder}”不存在，请检查你的文件命名是否正确。'
 
     # 2. 检查编译是否正确
 
     # 编译cpp文件
-    compiled_file = filepath[:-4] + '.exe'
+    compiled_file = filepath.with_suffix('.exe')
     compile_command = f".\\mingw64\\bin\\g++.exe {filepath} -o {compiled_file} -Wall -std=c++11 -O2"
     subprocess.run(compile_command, shell=True)
 
     # 检查编译是否成功
-    if not os.path.exists(compiled_file):
+    if not compiled_file.exists():
         return '编译错误：你提交的代码编译失败，请在本地开发环境确认代码能否正确编译。'
 
     # 3. 运行代码
 
     # 查找所有的输入文件
-    input_files = [f for f in os.listdir(subfolder_path) if f.endswith('.in')]
+    input_files = list(subfolder_path.glob('*.in'))
 
     # 设置内存限制
     memory_limit = MEMORY_LIMIT * 1024 * 1024  # 默认 512MB
-    process = psutil.Process(os.getpid())
+    process = psutil.Process()
 
     # 对每个输入文件进行测试
     for input_file in input_files:
@@ -128,21 +129,19 @@ def compile_and_test_cpp(filepath):
         if process.memory_info().rss > memory_limit:
             return '内存超限：你提交的代码由于超过运行内存限制导致运行失败，请检查你是否创建了过大的数组，或者动态分配了过多的内存空间。'
 
-        # 构建输入文件和输出文件的完整路径
-        input_path = os.path.join(subfolder_path, input_file)
-        output_file = input_file[:-3] + '.out'
-        output_path = os.path.join(subfolder_path, output_file)
+        # 构建输出文件的完整路径
+        output_file = input_file.with_suffix('.out')
 
         # 3.2 检查运行时限
         # 执行编译后的文件，将输入文件作为输入
         try:
-            result = subprocess.run([compiled_file], stdin=open(input_path), stdout=subprocess.PIPE,
+            result = subprocess.run([compiled_file], stdin=open(input_file), stdout=subprocess.PIPE,
                                     text=True, timeout=TIME_LIMIT, check=True)
         except subprocess.TimeoutExpired:
             return '运行超时：你提交的代码由于超过 CPU 运行时间限制导致运行失败，请检查你的算法的时间复杂度等是否正确。'
 
         # 读取预期输出文件内容
-        with open(output_path, 'r') as f:
+        with open(output_file, 'r') as f:
             expected_output_lines = f.readlines()
 
         # 3.3 检查答案正确性
