@@ -1,9 +1,9 @@
 from flask import Flask, render_template, request, redirect
-from pathlib import Path
 import subprocess
 from datetime import datetime
 import psutil
-import glob
+import json
+from pathlib import Path
 import webbrowser
 
 MEMORY_LIMIT = 512  # 全局内存限制（单位：MB）
@@ -31,18 +31,23 @@ def allowed_file(filename):
 def index():
     submissions = []
     log_files = list(Path('submission').glob('*.log'))
-    # log_files = glob.glob('submission/*.log')
     for log_file in log_files:
-        with open(log_file, 'r') as file:
-            # 每个日志文件的第一行是评测时间，第二行是评测结果
-            timestamp = file.readline().strip()
-            result = file.readline().strip()
-            filename = file.readline().strip()
-            submissions.append({'timestamp': timestamp, 'result': result, 'filename': filename})
+        try:
+            with open(log_file, 'r') as file:
+                # 每个日志文件的第一行是评测时间，第二行是评测结果
+                log_data = json.load(file)
+                submissions.append({
+                    'timestamp': log_data['timestamp'],
+                    'filename': log_data['filename'],
+                    'result': log_data['result']
+                })
+        except json.JSONDecodeError:
+            print(f"Warning: Failed to parse {log_file} as JSON. Skipping this file.")
+        except KeyError:
+            print(f"Warning: {log_file} is missing required fields. Skipping this file.")
 
     # 按时间排序，确保最新的记录在前
     submissions.sort(key=lambda x: x['timestamp'], reverse=True)
-
     return render_template('index.html', submissions=submissions)
 
 
@@ -76,9 +81,15 @@ def upload_file():
         log_filename = f"{timestamp_for_filename}-{filename_without_ext}.log"  # 组合成日志文件名
         log_path = submission_folder / log_filename  # 日志文件的完整路径
 
-        # 将评测时间和评测结果写入日志文件
+        # 将评测时间和评测结果写入日志文件（JSON格式）
+        log_data = {
+            'timestamp': timestamp_for_log,
+            'filename': filename,
+            'result': result
+        }
+
         with open(log_path, 'w') as log_file:
-            log_file.write(f"{timestamp_for_log}\n{result}\n{filename}\n")
+            json.dump(log_data, log_file, indent=4)
 
         return render_template('submission.html', result=result)
     else:
